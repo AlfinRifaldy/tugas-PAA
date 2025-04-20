@@ -1,0 +1,258 @@
+import pygame
+import random
+import math
+import heapq
+from PIL import Image
+import numpy as np
+import tkinter as tk
+from tkinter import filedialog
+
+# Inisialisasi
+pygame.init()
+root = tk.Tk()
+root.withdraw()
+
+# Konfigurasi
+WINDOW_WIDTH, WINDOW_HEIGHT = 800, 600
+screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+pygame.display.set_caption("Kurir Cerdas")
+
+# Konstanta
+COURIER_SPEED = 6
+NODE_RADIUS = 5
+ROTATION_SPEED = 5
+
+# Warna
+WHITE = (255, 255, 255)
+GRAY_MIN = (90, 90, 90)
+GRAY_MAX = (150, 150, 150)
+YELLOW = (255, 255, 0)
+RED = (255, 0, 0)
+BLUE = (0, 0, 255)
+GREEN = (0, 255, 0)
+BUTTON_COLOR = (200, 200, 200)
+BUTTON_TEXT_COLOR = (0, 0, 0)
+
+# Variabel
+map_image = None
+map_array = None
+courier_pos = [100, 100]
+courier_angle = 0
+source_pos = None
+dest_pos = None
+path = []
+path_history = []
+moving = False
+has_package = False
+current_target_index = 0
+state = "idle"
+start_pressed = False
+initial_courier_pos = None
+
+# Tombol UI
+load_button = pygame.Rect(10, 10, 100, 40)
+random_button = pygame.Rect(120, 10, 100, 40)
+start_button = pygame.Rect(230, 10, 100, 40)
+reset_button = pygame.Rect(340, 10, 100, 40)
+
+def load_map():
+    global map_image, map_array
+    file_path = filedialog.askopenfilename(title="Pilih Peta", filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp")])
+    if file_path:
+        try:
+            map_image = pygame.image.load(file_path)
+            map_image = pygame.transform.scale(map_image, (WINDOW_WIDTH, WINDOW_HEIGHT))
+            img = Image.open(file_path).convert('RGB').resize((WINDOW_WIDTH, WINDOW_HEIGHT))
+            map_array = np.array(img)
+            return True
+        except Exception as e:
+            print(f"Error: {e}")
+    return False
+
+def is_path(x, y):
+    if map_array is None: return False
+    if 0 <= x < WINDOW_WIDTH and 0 <= y < WINDOW_HEIGHT:
+        r, g, b = map_array[int(y), int(x)]
+        return GRAY_MIN[0] <= r <= GRAY_MAX[0] and GRAY_MIN[1] <= g <= GRAY_MAX[1] and GRAY_MIN[2] <= b <= GRAY_MAX[2]
+    return False
+
+def a_star(start, goal):
+    def heuristic(a, b):
+        return abs(a[0]-b[0]) + abs(a[1]-b[1])
+    
+    open_set = [(0, start)]
+    came_from = {}
+    g_score = {start: 0}
+    f_score = {start: heuristic(start, goal)}
+    visited = set()
+    
+    while open_set:
+        _, current = heapq.heappop(open_set)
+        
+        if current == goal:
+            path = []
+            while current in came_from:
+                path.append(current)
+                current = came_from[current]
+            return path[::-1]
+        
+        if current in visited: continue
+        visited.add(current)
+        
+        for dx, dy in [(0,1),(1,0),(0,-1),(-1,0)]:
+            neighbor = (current[0]+dx, current[1]+dy)
+            if 0 <= neighbor[0] < WINDOW_WIDTH and 0 <= neighbor[1] < WINDOW_HEIGHT and is_path(*neighbor):
+                tentative_g = g_score[current] + 1
+                if tentative_g < g_score.get(neighbor, float('inf')):
+                    came_from[neighbor] = current
+                    g_score[neighbor] = tentative_g
+                    f_score[neighbor] = tentative_g + heuristic(neighbor, goal)
+                    heapq.heappush(open_set, (f_score[neighbor], neighbor))
+    return []
+
+def randomize_positions():
+    global courier_pos, source_pos, dest_pos, path, path_history, moving, has_package, current_target_index, state, courier_angle, initial_courier_pos, start_pressed
+
+    def get_random_pos():
+        for _ in range(1000):
+            x, y = random.randint(0, WINDOW_WIDTH - 1), random.randint(0, WINDOW_HEIGHT - 1)
+            if is_path(x, y):
+                return [x, y]
+        return None
+
+    source_pos = get_random_pos()
+    dest_pos = get_random_pos()
+    courier_pos = list(source_pos)
+    initial_courier_pos = list(source_pos)
+    courier_angle = 0
+    has_package = True
+    current_target_index = 0
+    path_history = []
+    state = "idle"
+    start_pressed = False
+
+    if source_pos and dest_pos:
+        path = a_star((int(source_pos[0]), int(source_pos[1])), (int(dest_pos[0]), int(dest_pos[1])))
+        if not path:
+            print("Path tidak ditemukan.")
+
+def draw_courier():
+    x, y = int(courier_pos[0]), int(courier_pos[1])
+    size = 15
+    angle_rad = math.radians(courier_angle)
+    front = (x + size*2 * math.cos(angle_rad), y - size*2 * math.sin(angle_rad))
+    left = (x + size * math.cos(angle_rad + math.pi*3/4), y - size * math.sin(angle_rad + math.pi*3/4))
+    right = (x + size * math.cos(angle_rad - math.pi*3/4), y - size * math.sin(angle_rad - math.pi*3/4))
+    pygame.draw.polygon(screen, BLUE, [front, left, right])
+    pygame.draw.circle(screen, BLUE, (x, y), size//3)
+
+def calculate_desired_angle(target_pos):
+    dx = target_pos[0] - courier_pos[0]
+    dy = courier_pos[1] - target_pos[1]
+    return math.degrees(math.atan2(dy, dx)) % 360
+
+def rotate_to_target(target_angle):
+    global courier_angle, state
+    diff = (target_angle - courier_angle + 180) % 360 - 180
+    if abs(diff) < ROTATION_SPEED:
+        courier_angle = target_angle
+        state = "moving"
+        return True
+    if diff > 0:
+        courier_angle = (courier_angle + ROTATION_SPEED) % 360
+    else:
+        courier_angle = (courier_angle - ROTATION_SPEED) % 360
+    return False
+
+def move_to_target(target_pos):
+    global courier_pos, path_history, state
+    desired_angle = calculate_desired_angle(target_pos)
+    angle_diff = abs((desired_angle - courier_angle + 180) % 360 - 180)
+    if angle_diff > 15:
+        state = "rotating"
+        return False
+    rad = math.radians(courier_angle)
+    courier_pos[0] += COURIER_SPEED * math.cos(rad)
+    courier_pos[1] -= COURIER_SPEED * math.sin(rad)
+    if math.dist(courier_pos, target_pos) < COURIER_SPEED:
+        courier_pos = list(target_pos)
+        path_history.append(target_pos)
+        return True
+    return False
+
+# Main loop
+clock = pygame.time.Clock()
+font = pygame.font.SysFont('Arial', 24)
+running = True
+
+while running:
+    dt = clock.tick(60) / 1000.0
+
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            if load_button.collidepoint(event.pos):
+                load_map()
+            elif random_button.collidepoint(event.pos):
+                randomize_positions()
+            elif start_button.collidepoint(event.pos):
+                if path and not moving:
+                    moving = True
+                    current_target_index = 0
+                    state = "rotating"
+                    start_pressed = True
+                    path_history = [tuple(courier_pos)]
+            elif reset_button.collidepoint(event.pos):
+                if initial_courier_pos:
+                    courier_pos = list(initial_courier_pos)
+                    courier_angle = 0
+                    current_target_index = 0
+                    moving = False
+                    state = "idle"
+                    start_pressed = False
+                    path_history = []
+
+    if moving and path and current_target_index < len(path):
+        target_pos = path[current_target_index]
+        if state == "rotating":
+            desired_angle = calculate_desired_angle(target_pos)
+            if rotate_to_target(desired_angle):
+                state = "moving"
+        elif state == "moving":
+            if move_to_target(target_pos):
+                current_target_index += 1
+                if current_target_index >= len(path):
+                    print("Paket berhasil dikirim!")
+                    moving = False
+                    state = "idle"
+
+    screen.fill(WHITE)
+    if map_image:
+        screen.blit(map_image, (0, 0))
+
+    # Gambar garis hijau saat bergerak
+    if start_pressed and len(path_history) > 1:
+        pygame.draw.lines(screen, GREEN, False, path_history, 2)
+
+    # Tombol
+    pygame.draw.rect(screen, BUTTON_COLOR, load_button)
+    pygame.draw.rect(screen, BUTTON_COLOR, random_button)
+    pygame.draw.rect(screen, BUTTON_COLOR, start_button)
+    pygame.draw.rect(screen, BUTTON_COLOR, reset_button)
+    screen.blit(font.render("Load Map", True, BUTTON_TEXT_COLOR), (load_button.x + 5, load_button.y + 10))
+    screen.blit(font.render("Random", True, BUTTON_TEXT_COLOR), (random_button.x + 10, random_button.y + 10))
+    screen.blit(font.render("Start", True, BUTTON_TEXT_COLOR), (start_button.x + 20, start_button.y + 10))
+    screen.blit(font.render("Reset", True, BUTTON_TEXT_COLOR), (reset_button.x + 20, reset_button.y + 10))
+
+    # Titik
+    if source_pos:
+        pygame.draw.circle(screen, YELLOW, (int(source_pos[0]), int(source_pos[1])), NODE_RADIUS)
+    if dest_pos:
+        pygame.draw.circle(screen, RED, (int(dest_pos[0]), int(dest_pos[1])), NODE_RADIUS)
+
+    draw_courier()
+
+    pygame.display.flip()
+
+pygame.quit()
